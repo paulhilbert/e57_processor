@@ -39,6 +39,7 @@ void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, e57::Writer& normal_wr
 
 int main (int argc, char const* argv[]) {
 	std::string  fileIn;
+	std::string  fileOut;
 	std::string  prefixOut;
     float        leafSize;
     uint32_t     kNN;
@@ -47,6 +48,7 @@ int main (int argc, char const* argv[]) {
 	desc.add_options()
 		("help,h",  "Help message")
 		("input,i",     po::value<std::string>(&fileIn) ->required(), "Input E57 File")
+		("output,o",     po::value<std::string>(&fileOut), "Output E57 File (optionally use --prefix instead)")
 		("prefix,p",  po::value<std::string>(&prefixOut), "Prefix to use for output files")
 		("leaf,l",   po::value<float>(&leafSize)->default_value(0.0), "Leaf Size for subsampling (default is 0; size <= 0 means no subsampling)")
 		("kNN,k",        po::value<uint32_t>(&kNN)->default_value(12), "Number of nearest neighbors to use for normal estimation (default is 0; value of 0 means no normal estimation)")
@@ -75,16 +77,28 @@ int main (int argc, char const* argv[]) {
         return 1;
     }
 
+    std::string suffixOut = ".e57";
     if (vm.count("prefix") == 0) {
-        prefixOut = pFileIn.stem().string() + "_";
+        prefixOut = pFileIn.parent_path().string() + "/" + fs::basename(pFileIn) + "_";
+    }
+
+    if (vm.count("prefix") && vm.count("output")) {
+        std::cout << "Either use --prefix or --output, but not both." << "\n";
+        return 1;
+    }
+
+    if (vm.count("output")) {
+        fs::path pFileOut(fileOut);
+        prefixOut = pFileOut.parent_path().string() + "/" + fs::basename(pFileOut) + "_";
+        suffixOut = pFileOut.extension().string();
     }
 
 	try {
 		e57::Reader reader(fileIn);
         e57::E57Root root;
         reader.GetE57Root(root);
-		e57::Writer writer_xyz(prefixOut + "xyz.e57", root.coordinateMetadata);
-		e57::Writer writer_normals(prefixOut + "normals.e57", root.coordinateMetadata);
+		e57::Writer writer_xyz(prefixOut + "xyz" + suffixOut, root.coordinateMetadata);
+		e57::Writer writer_normals(prefixOut + "normals" + suffixOut, root.coordinateMetadata);
 
 		uint32_t scanCount = reader.GetData3DCount();
 		uint32_t imgCount = reader.GetImage2DCount();
@@ -270,6 +284,7 @@ void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, e57::Writer& writer_no
     write_scan_data(writer, header, data_x, data_y, data_z);
 
     // write normal data
+    if (!normal_cloud) return;
     header.pose.translation.x = 0.0;
     header.pose.translation.y = 0.0;
     header.pose.translation.z = 0.0;
