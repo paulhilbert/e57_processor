@@ -1,0 +1,7 @@
+*.sdf
+*.suo
+*.filters
+*.user
+testdata
+output
+build
