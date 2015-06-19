@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 2.8.8)
-project(e57processor)
+project(e57_processor)
 
-set (e57processor_VERSION_MAJOR 0)
-set (e57processor_VERSION_MINOR 1)
+set (e57_processor_VERSION_MAJOR 0)
+set (e57_processor_VERSION_MINOR 1)
 
 include_directories("${PROJECT_SOURCE_DIR}")
 include_directories("${PROJECT_BINARY_DIR}")
@@ -36,10 +36,10 @@ if (EIGEN_FOUND AND PCL_FOUND AND Boost_FOUND AND LIBE57_FOUND)
 	include_directories(${Boost_INCLUDE_DIRS})
 	include_directories(${LIBE57_INCLUDE_DIRS})
 
-	add_executable(e57processor ${obj})
-	target_link_libraries(e57processor ${Boost_LIBRARIES} ${PCL_LIBRARIES} ${LIBE57_LIBRARIES} "dl")
+	add_executable(e57_processor ${obj})
+	target_link_libraries(e57_processor ${Boost_LIBRARIES} ${PCL_LIBRARIES} ${LIBE57_LIBRARIES} "dl")
 
 	# install binary
-    install (TARGETS e57processor DESTINATION bin)
+    install (TARGETS e57_processor DESTINATION bin)
 endif()
 
