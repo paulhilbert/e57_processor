@@ -54,6 +54,11 @@ int main (int argc, char const* argv[]) {
 		("kNN,k",        po::value<uint32_t>(&kNN)->default_value(12), "Number of nearest neighbors to use for normal estimation (default is 0; value of 0 means no normal estimation)")
 	;
 
+    std::cout << "args" << "\n";
+    for (int i = 0; i < argc; ++i) {
+        std::cout << argv[i] << "\n";
+    }
+
 
 	// Check for required options.
 	po::variables_map vm;
