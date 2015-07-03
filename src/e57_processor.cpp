@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <tuple>
 #include <e57/E57Foundation.h>
 #include <e57/E57Simple.h>
 
@@ -34,7 +35,10 @@ typedef pcl::PointCloud<PointNormal> CloudNormal;
 std::pair<CloudXYZ::Ptr, CloudNormal::Ptr> process_cloud(CloudXYZ::Ptr cloud, optional<float> leaf_size, optional<uint32_t> kNN);
 Eigen::Vector3d read_origin(e57::Reader& reader, uint32_t scan_index);
 CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, const Eigen::Vector3d& offset);
-void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, e57::Writer& normal_writer, CloudNormal::Ptr normal_cloud);
+void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, CloudNormal::Ptr normal_cloud);
+
+typedef std::vector<double> coords_t;
+typedef std::tuple<coords_t, coords_t, coords_t> point_data_t;
 
 
 int main (int argc, char const* argv[]) {
@@ -79,7 +83,7 @@ int main (int argc, char const* argv[]) {
 
     std::string suffixOut = ".e57";
     if (vm.count("prefix") == 0) {
-        prefixOut = pFileIn.parent_path().string() + "/" + fs::basename(pFileIn) + "_";
+        prefixOut = pFileIn.parent_path().string() + "/" + fs::basename(pFileIn);
     }
 
     if (vm.count("prefix") && vm.count("output")) {
@@ -89,7 +93,9 @@ int main (int argc, char const* argv[]) {
 
     if (vm.count("output")) {
         fs::path pFileOut(fileOut);
-        prefixOut = pFileOut.parent_path().string() + "/" + fs::basename(pFileOut) + "_";
+        std::string parent_path = pFileOut.parent_path().string();
+        if (parent_path == "") parent_path = ".";
+        prefixOut = parent_path + "/" + fs::basename(pFileOut);
         suffixOut = pFileOut.extension().string();
     }
 
@@ -97,8 +103,9 @@ int main (int argc, char const* argv[]) {
 		e57::Reader reader(fileIn);
         e57::E57Root root;
         reader.GetE57Root(root);
-		e57::Writer writer_xyz(prefixOut + "xyz" + suffixOut, root.coordinateMetadata);
-		e57::Writer writer_normals(prefixOut + "normals" + suffixOut, root.coordinateMetadata);
+        std::string output_file = prefixOut + suffixOut;
+        std::cout << "output file: " << output_file << "\n";
+		e57::Writer writer_xyz(output_file, root.coordinateMetadata);
 
 		uint32_t scanCount = reader.GetData3DCount();
 		uint32_t imgCount = reader.GetImage2DCount();
@@ -111,24 +118,20 @@ int main (int argc, char const* argv[]) {
 			std::cout << "scan: " << (scan_index+1) << " / " << scanCount << "\n";
             CloudXYZ::Ptr cloud = read_scan(reader, scan_index, -first_origin);
 
-            optional<float> ls = none;
-            optional<uint32_t> k = none;
-            if (leafSize > 0.f) {
-                ls = leafSize;
-            }
-            if (kNN > 0) {
-                k = kNN;
-            }
+            optional<float> ls = boost::make_optional(leafSize > 0.f, leafSize);
+            optional<uint32_t> k = boost::make_optional(kNN > 0, kNN);
             CloudNormal::Ptr normal_cloud;
             std::tie(cloud, normal_cloud) = process_cloud(cloud, ls, k);
 
-            write_scan(writer_xyz, cloud, writer_normals, normal_cloud);
+            write_scan(writer_xyz, cloud, normal_cloud);
 		}
 
         writer_xyz.Close();
-        writer_normals.Close();
-	} catch (...) {
-		std::cout << "exception" << "\n";
+	} catch (e57::E57Exception& e) {
+        std::cout << "Exception thrown:" << "\n";
+		std::cout << e.what() << "\n";
+        std::cout << "Context:" << "\n";
+        std::cout << e.context() << "\n";
 	}
 
 	return 0;
@@ -242,18 +245,45 @@ CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, const Eigen::V
     return cloud;
 }
 
-void write_scan_data(e57::Writer& writer, e57::Data3D& header, std::vector<double>& data_x, std::vector<double>& data_y, std::vector<double>& data_z) {
-    uint32_t num_points = data_x.size();
-    if (num_points != data_y.size() || num_points != data_z.size()) {
+void write_scan_data(e57::Writer& writer, e57::Data3D& header, point_data_t& pos_data, point_data_t& normal_data) {
+    uint32_t num_points = std::get<0>(pos_data).size();
+    if (num_points != std::get<1>(pos_data).size() || num_points != std::get<2>(pos_data).size()) {
         throw std::runtime_error("Exception while writing data: Inconsistent data counts");
     }
+    bool has_normals = std::get<0>(normal_data).size() == std::get<0>(pos_data).size();
+
+    header.pointFields.cartesianXField = true;
+    header.pointFields.cartesianYField = true;
+    header.pointFields.cartesianZField = true;
+    //header.pointFields.cartesianInvalidStateField = true;
+    if (has_normals) {
+        header.pointFields.sphericalRangeField = true;
+        header.pointFields.sphericalAzimuthField = true;
+        header.pointFields.sphericalElevationField = true;
+        //header.pointFields.sphericalInvalidStateField = true;
+    }
+
     int scan_index = writer.NewData3D(header);
-    e57::CompressedVectorWriter block_write = writer.SetUpData3DPointsData(scan_index, num_points, data_x.data(), data_y.data(), data_z.data());
+
+    int8_t pos_valid = 1, nrm_valid = has_normals ? 1 : 0;
+    e57::CompressedVectorWriter block_write = writer.SetUpData3DPointsData(
+        scan_index,
+        num_points,
+        std::get<0>(pos_data).data(),
+        std::get<1>(pos_data).data(),
+        std::get<2>(pos_data).data(),
+        &pos_valid,
+        NULL, NULL, NULL, NULL, NULL, NULL,
+        has_normals ? std::get<0>(normal_data).data() : NULL,
+        has_normals ? std::get<1>(normal_data).data() : NULL,
+        has_normals ? std::get<2>(normal_data).data() : NULL,
+        &nrm_valid
+    );
     block_write.write(num_points);
     block_write.close();
 }
 
-void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, e57::Writer& writer_normals, CloudNormal::Ptr normal_cloud) {
+void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, CloudNormal::Ptr normal_cloud) {
     // write positions
     e57::Data3D header;
     boost::uuids::random_generator gen;
@@ -273,27 +303,34 @@ void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, e57::Writer& writer_no
     header.pose.translation.z = cloud->sensor_origin_[2];
 
     // write position data
-    std::vector<double> data_x(num_points), data_y(num_points), data_z(num_points);
+    bool has_normals = normal_cloud && normal_cloud->size() == cloud->size();
+    point_data_t pos_data(coords_t(num_points, 0.0), coords_t(num_points, 0.0), coords_t(num_points, 0.0));
+    point_data_t nrm_data(coords_t(has_normals ? num_points : 0), coords_t(has_normals ? num_points : 0), coords_t(has_normals ? num_points : 0));
     uint32_t idx = 0;
     for (const auto& p : *cloud) {
-        data_x[idx] = p.x;
-        data_y[idx] = p.y;
-        data_z[idx] = p.z;
+        std::get<0>(pos_data)[idx] = p.x;
+        std::get<1>(pos_data)[idx] = p.y;
+        std::get<2>(pos_data)[idx] = p.z;
+        if (has_normals) {
+            std::get<0>(nrm_data)[idx] = normal_cloud->points[idx].normal[0];
+            std::get<1>(nrm_data)[idx] = normal_cloud->points[idx].normal[1];
+            std::get<2>(nrm_data)[idx] = normal_cloud->points[idx].normal[2];
+        }
         ++idx;
     }
-    write_scan_data(writer, header, data_x, data_y, data_z);
+    write_scan_data(writer, header, pos_data, nrm_data);
 
     // write normal data
-    if (!normal_cloud) return;
-    header.pose.translation.x = 0.0;
-    header.pose.translation.y = 0.0;
-    header.pose.translation.z = 0.0;
-    idx = 0;
-    for (const auto& p : *normal_cloud) {
-        data_x[idx] = p.normal[0];
-        data_y[idx] = p.normal[1];
-        data_z[idx] = p.normal[2];
-        ++idx;
-    }
-    write_scan_data(writer_normals, header, data_x, data_y, data_z);
+    //if (!normal_cloud) return;
+    //header.pose.translation.x = 0.0;
+    //header.pose.translation.y = 0.0;
+    //header.pose.translation.z = 0.0;
+    //idx = 0;
+    //for (const auto& p : *normal_cloud) {
+        //data_x[idx] = p.normal[0];
+        //data_y[idx] = p.normal[1];
+        //data_z[idx] = p.normal[2];
+        //++idx;
+    //}
+    //write_scan_data(writer_normals, header, data_x, data_y, data_z);
 }
