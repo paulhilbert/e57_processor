@@ -216,10 +216,14 @@ void write_scan_data(e57::Writer& writer, e57::Data3D& header, point_data_t& pos
     header.pointFields.cartesianXField = true;
     header.pointFields.cartesianYField = true;
     header.pointFields.cartesianZField = true;
+    // FIXME: necessary?
+    //header.pointFields.cartesianInvalidStateField = true;
     if (has_normals) {
         header.pointFields.sphericalRangeField = true;
         header.pointFields.sphericalAzimuthField = true;
         header.pointFields.sphericalElevationField = true;
+        // FIXME: necessary?
+        //header.pointFields.sphericalInvalidStateField = true;
     }
 
     int scan_index = writer.NewData3D(header);
