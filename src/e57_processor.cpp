@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <tuple>
+#include <vector>
 #include <e57/E57Foundation.h>
 #include <e57/E57Simple.h>
 
@@ -22,7 +23,7 @@ namespace fs = boost::filesystem;
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/features/normal_3d.h>
+#include <pcl/features/normal_3d_omp.h>
 #include <pcl/filters/filter.h>
 #include <pcl/keypoints/uniform_sampling.h>
 #include <pcl/common/transforms.h>
@@ -32,8 +33,8 @@ typedef pcl::Normal PointNormal;
 typedef pcl::PointCloud<PointXYZ> CloudXYZ;
 typedef pcl::PointCloud<PointNormal> CloudNormal;
 
-std::pair<CloudXYZ::Ptr, CloudNormal::Ptr> process_cloud(CloudXYZ::Ptr cloud, optional<float> leaf_size, optional<uint32_t> kNN);
-CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBodyTransform& scanTransform);
+void process_cloud(optional<float> leaf_size, optional<uint32_t> kNN, CloudXYZ::Ptr& cloud, CloudNormal::Ptr& normal_cloud);
+void read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBodyTransform& scanTransform, CloudXYZ::Ptr& cloud, CloudNormal::Ptr& normal_cloud);
 void write_scan(e57::Writer& writer, CloudXYZ::Ptr cloud, CloudNormal::Ptr normal_cloud, const e57::RigidBodyTransform& scanTransform);
 
 typedef std::vector<double> coords_t;
@@ -41,20 +42,22 @@ typedef std::tuple<coords_t, coords_t, coords_t> point_data_t;
 
 
 int main (int argc, char const* argv[]) {
-    std::string  fileIn;
-    std::string  fileOut;
-    std::string  prefixOut;
-    float        leafSize;
-    uint32_t     kNN;
+    std::string            fileIn;
+    std::string            fileOut;
+    std::string            prefixOut;
+    float                  leafSize;
+    uint32_t               kNN;
+    std::vector<uint32_t>  subset;
 
     po::options_description desc("E57 processor command line options");
     desc.add_options()
-        ("help,h",  "Help message")
-        ("input,i",     po::value<std::string>(&fileIn) ->required(), "Input E57 File")
-        ("output,o",     po::value<std::string>(&fileOut), "Output E57 File (optionally use --prefix instead)")
-        ("prefix,p",  po::value<std::string>(&prefixOut), "Prefix to use for output files")
+        ("help,h",   "Help message")
+        ("input,i",  po::value<std::string>(&fileIn) ->required(), "Input E57 File")
+        ("output,o", po::value<std::string>(&fileOut), "Output E57 File (optionally use --prefix instead)")
+        ("prefix,p", po::value<std::string>(&prefixOut), "Prefix to use for output files")
         ("leaf,l",   po::value<float>(&leafSize)->default_value(0.0), "Leaf Size for subsampling (default is 0; size <= 0 means no subsampling)")
-        ("kNN,k",        po::value<uint32_t>(&kNN)->default_value(12), "Number of nearest neighbors to use for normal estimation (default is 0; value of 0 means no normal estimation)")
+        ("kNN,k",    po::value<uint32_t>(&kNN)->default_value(12), "Number of nearest neighbors to use for normal estimation (default is 0; value of 0 means no normal estimation)")
+        ("subset,s", po::value<std::vector<uint32_t>>(&subset), "Optional scan index subset to extract")
     ;
 
     // Check for required options.
@@ -110,16 +113,24 @@ int main (int argc, char const* argv[]) {
         uint32_t imgCount = reader.GetImage2DCount();
         std::cout << "number of scans: " << scanCount << "\n";
         std::cout << "number of images: " << imgCount << "\n\n";
+        
+        if (!subset.size()) {
+            subset.resize(scanCount);
+            std::iota(subset.begin(), subset.end(), 0);
+        }
 
-        for (uint32_t scan_index = 0; scan_index < scanCount; ++scan_index) {
+        for (uint32_t scan_index : subset) {
             std::cout << "scan: " << (scan_index+1) << " / " << scanCount << "\n";
+            
+            CloudXYZ::Ptr cloud;
+            CloudNormal::Ptr normal_cloud;
+            
             e57::RigidBodyTransform scanTransform;
-            CloudXYZ::Ptr cloud = read_scan(reader, scan_index, scanTransform);
+            read_scan(reader, scan_index, scanTransform, cloud, normal_cloud);
 
             optional<float> ls = boost::make_optional(leafSize > 0.f, leafSize);
             optional<uint32_t> k = boost::make_optional(kNN > 0, kNN);
-            CloudNormal::Ptr normal_cloud;
-            std::tie(cloud, normal_cloud) = process_cloud(cloud, ls, k);
+            process_cloud(ls, k, cloud, normal_cloud);
 
             write_scan(writer_xyz, cloud, normal_cloud, scanTransform);
         }
@@ -137,7 +148,7 @@ int main (int argc, char const* argv[]) {
 
 CloudNormal::Ptr compute_normals(CloudXYZ::Ptr cloud, uint32_t k) {
     CloudNormal::Ptr normal_cloud(new CloudNormal());
-    pcl::NormalEstimation<PointXYZ, PointNormal> ne;
+    pcl::NormalEstimationOMP<PointXYZ, PointNormal> ne;
     ne.setInputCloud(cloud);
     ne.setKSearch(k);
     ne.setViewPoint(0.f, 0.f, 0.f);
@@ -146,7 +157,7 @@ CloudNormal::Ptr compute_normals(CloudXYZ::Ptr cloud, uint32_t k) {
     return normal_cloud;
 }
 
-std::pair<CloudXYZ::Ptr, CloudNormal::Ptr> process_cloud(CloudXYZ::Ptr cloud, optional<float> leaf_size, optional<uint32_t> kNN) {
+void process_cloud(optional<float> leaf_size, optional<uint32_t> kNN, CloudXYZ::Ptr& cloud, CloudNormal::Ptr& normal_cloud) {
     std::vector<int> indices;
     pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
 
@@ -160,17 +171,16 @@ std::pair<CloudXYZ::Ptr, CloudNormal::Ptr> process_cloud(CloudXYZ::Ptr cloud, op
         std::vector<int> subset(subsampled_indices.points.begin(), subsampled_indices.points.end());
         CloudXYZ::Ptr subset_cloud(new CloudXYZ(*cloud, subset));
         cloud = subset_cloud;
+        CloudNormal::Ptr subset_normal_cloud(new CloudNormal(*normal_cloud, subset));
+        normal_cloud = subset_normal_cloud;
     }
 
-    CloudNormal::Ptr normal_cloud;
     if (kNN) {
         normal_cloud = compute_normals(cloud, kNN.get());
     }
-
-    return {cloud, normal_cloud};
 }
 
-CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBodyTransform& scanTransform) {
+void read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBodyTransform& scanTransform, CloudXYZ::Ptr& cloud, CloudNormal::Ptr& normal_cloud) {
     e57::Data3D header;
     reader.ReadData3D(scan_index, header);
     int64_t nColumn = 0, nRow = 0, nPointsSize = 0, nGroupsSize = 0, nCounts = 0; bool bColumnIndex = 0;
@@ -178,11 +188,12 @@ CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBody
 
     int64_t n_size = (nRow > 0) ? nRow : 1024;
 
-    double *data_x = new double[n_size], *data_y = new double[n_size], *data_z = new double[n_size];
-    auto block_read = reader.SetUpData3DPointsData(scan_index, n_size, data_x, data_y, data_z);
+    double *data_x = new double[n_size], *data_y = new double[n_size], *data_z = new double[n_size], *data_nx = new double[n_size], *data_ny = new double[n_size], *data_nz = new double[n_size];
+    auto block_read = reader.SetUpData3DPointsData(scan_index, n_size, data_x, data_y, data_z, NULL, NULL, NULL, NULL, NULL, NULL, NULL, data_nx, data_ny, data_nz);
 
     unsigned long size = 0;
-    CloudXYZ::Ptr cloud(new CloudXYZ());
+    cloud = CloudXYZ::Ptr(new CloudXYZ());
+    normal_cloud = CloudNormal::Ptr(new CloudNormal());
     while((size = block_read.read()) > 0) {
         for(unsigned long i = 0; i < size; i++) {
             PointXYZ p_pcl;
@@ -192,6 +203,21 @@ CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBody
                 static_cast<float>(data_z[i])
             );
             cloud->push_back(p_pcl);
+            
+            double nx = 0.0, ny = 0.0, nz = 0.0;
+            if (header.pointFields.sphericalRangeField && header.pointFields.sphericalAzimuthField && header.pointFields.sphericalElevationField) {
+                nx = data_nx[i];
+                ny = data_ny[i];
+                nz = data_nz[i];
+            }
+            
+            PointNormal n_pcl;
+            n_pcl.getNormalVector3fMap() = Eigen::Vector3f(
+                static_cast<float>(nx),
+                static_cast<float>(ny),
+                static_cast<float>(nz)
+            );
+            normal_cloud->push_back(n_pcl);
         }
     }
     block_read.close();
@@ -199,11 +225,12 @@ CloudXYZ::Ptr read_scan(e57::Reader& reader, uint32_t scan_index, e57::RigidBody
     delete [] data_x;
     delete [] data_y;
     delete [] data_z;
+    delete [] data_nx;
+    delete [] data_ny;
+    delete [] data_nz;
 
     // Remember the original scan pose for later writing.
     scanTransform = header.pose;
-
-    return cloud;
 }
 
 void write_scan_data(e57::Writer& writer, e57::Data3D& header, point_data_t& pos_data, point_data_t& normal_data) {
