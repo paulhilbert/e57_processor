@@ -56,7 +56,7 @@ int main (int argc, char const* argv[]) {
         ("output,o", po::value<std::string>(&fileOut), "Output E57 File (optionally use --prefix instead)")
         ("prefix,p", po::value<std::string>(&prefixOut), "Prefix to use for output files")
         ("leaf,l",   po::value<float>(&leafSize)->default_value(0.0), "Leaf Size for subsampling (default is 0; size <= 0 means no subsampling)")
-        ("kNN,k",    po::value<uint32_t>(&kNN)->default_value(12), "Number of nearest neighbors to use for normal estimation (default is 0; value of 0 means no normal estimation)")
+        ("kNN,k",    po::value<uint32_t>(&kNN)->default_value(12), "Number of nearest neighbors to use for normal estimation (value of 0 means no normal estimation)")
         ("subset,s", po::value<std::vector<uint32_t>>(&subset), "Optional scan index subset to extract")
     ;
 
