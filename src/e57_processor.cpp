@@ -53,6 +53,8 @@ int main (int argc, char const* argv[]) {
     std::vector<uint32_t>  subset;
     bool                   copy_colors;
 
+    print("yes");
+
     po::options_description desc("E57 processor command line options");
     desc.add_options()
         ("help,h",   "Help message")
